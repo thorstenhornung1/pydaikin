@@ -52,6 +52,8 @@ if __name__ == "__main__":
 
 The `DaikinFactory` automatically detects your device type and firmware version, creating the appropriate device instance.
 
+On BRP069 adapters, `device.mode_conflict` is `True` while the unit reports `err=10000`. Daikin documents this code as an operation mode conflict in multi-split systems: e.g. heat is requested while another indoor unit cools. The unit then stays in standby. Its setpoint is still accepted and stored, and the compressor frequency belongs to the shared outdoor unit, so neither shows whether this unit is actually heating or cooling.
+
 ## Firmware Version 2.8.0 Support
 
 Firmware version 2.8.0 introduces a different API structure compared to earlier versions. PyDaikin automatically detects and handles this firmware version.

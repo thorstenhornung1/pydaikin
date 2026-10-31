@@ -378,27 +378,32 @@ class DaikinBRP069(Appliance):
             await self._apply_whole_degree_fallback(params, current_val, exc)
             return
         if _is_half_degree(settings.get("stemp")) and await self._verify_stemp(
-            settings["stemp"]
+            settings["stemp"], params["mode"]
         ):
             self._step_status = "confirmed"
 
     def _may_fall_back(self, rejection, settings, current_val) -> bool:
         """Return True if only an unsupported half degree explains the rejection.
 
-        Never once 0.5 °C is confirmed, and only for a pure ``stemp`` change
-        inside WHOLE_DEGREE_FALLBACK_RANGE, where range errors are unlikely.
+        Never once 0.5 °C is confirmed, never in NO_SETPOINT_MODES, and only for
+        a pure ``stemp`` change inside WHOLE_DEGREE_FALLBACK_RANGE, where range
+        errors are unlikely.
         """
         if (
             not self.whole_degree_fallback
             or rejection.ret != "PARAM NG"
             or self._step_status == "confirmed"
             or settings.keys() != {"stemp"}
-            or _temperature(current_val.get("stemp")) is None
+            or current_val.get("mode") in self.NO_SETPOINT_MODES
         ):
             return False
         low, high = self.WHOLE_DEGREE_FALLBACK_RANGE
         stemp = settings["stemp"]
-        return _is_half_degree(stemp) and low < _temperature(stemp) < high
+        return (
+            _temperature(current_val.get("stemp")) is not None
+            and _is_half_degree(stemp)
+            and low < _temperature(stemp) < high
+        )
 
     async def _apply_whole_degree_fallback(self, params, current_val, rejection):
         """Retry a rejected half-degree ``stemp`` once, rounded half up (23.5 -> 24).
@@ -421,7 +426,7 @@ class DaikinBRP069(Appliance):
             _temperature(params["stemp"]).quantize(Decimal(1), rounding=ROUND_HALF_UP)
         )
         await self._write_control_info({**params, "stemp": stemp})
-        if not await self._verify_stemp(stemp):
+        if not await self._verify_stemp(stemp, params["mode"]):
             raise rejection
         self._step_status = "inferred"
         _LOGGER.warning(
@@ -433,19 +438,25 @@ class DaikinBRP069(Appliance):
             stemp,
         )
 
-    async def _verify_stemp(self, stemp) -> bool:
-        """Read the setpoint back; return True if it matches.
+    async def _verify_stemp(self, stemp, mode) -> bool:
+        """Read the setpoint written in ``mode`` back; True only if it confirms it.
 
-        Returns False for ``M``/``--`` in NO_SETPOINT_MODES (fan mode accepts
-        and ignores ``stemp``); any other value raises DaikinVerificationError.
+        Returns False, learning nothing, if the mode changed meanwhile or has no
+        setpoint (NO_SETPOINT_MODES: fan mode accepts and ignores ``stemp``, a
+        number there proves no resolution). Raises DaikinVerificationError for
+        a different number, or for ``M``/``--`` in a mode with a setpoint.
         """
         state = await self._read_control_info()
         actual = state["stemp"]
-        if _temperature(actual) is None and state["mode"] in self.NO_SETPOINT_MODES:
+        if state["mode"] != mode:
+            _LOGGER.debug("%s changed mode during verification", self.device_ip)
+            return False
+        no_setpoint = mode in self.NO_SETPOINT_MODES
+        if _temperature(actual) is None and no_setpoint:
             return False
         if _temperature(actual) != _temperature(stemp):
             raise DaikinVerificationError(stemp, actual)
-        return True
+        return not no_setpoint
 
     def _control_params(self) -> dict:
         """Build the set_control_info request from the cached values."""

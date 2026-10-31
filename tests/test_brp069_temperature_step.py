@@ -234,7 +234,9 @@ async def test_no_probe_without_pure_half_degree_request(
     """Other changes never trigger a fallback retry or a readback probe."""
     # An accepted half-degree setpoint is read back (no write) to confirm it
     readback = ret == "ret=OK" and "stemp" in settings
-    add_routes(aresponses, ["22.0", "23.5"] if readback else ["22.0"], [ret])
+    add_routes(aresponses, ["22.0"], [ret])
+    if readback:  # read back in the requested mode (cool)
+        aresponses.add(path_pattern=GET, response=ctrl("3", "23.5"))
     device = DaikinBRP069("192.168.1.100", session=client_session)
 
     if ret == "ret=OK":
@@ -695,28 +697,38 @@ async def test_airbase_set_without_shum(aresponses, client_session):
 FAN = CONTROL.replace("mode=4", "mode=6").replace("stemp={stemp}", "stemp=--")
 
 
+def ctrl(mode, stemp):
+    """Return a get_control_info reply in the given mode with the given stemp."""
+    return CONTROL.replace(",mode=4,", f",mode={mode},").format(stemp=stemp)
+
+
 @pytest.mark.parametrize(
-    ("mode", "readback", "error", "status"),
+    ("mode", "back_mode", "back", "error", "status"),
     [
-        ("6", "--", None, "unknown"),  # fan: accepts and ignores stemp (real adapter)
-        ("2", "M", None, "unknown"),  # dry: no setpoint either
-        ("4", "--", DaikinVerificationError, "unknown"),  # heat must confirm
-        ("3", "M", DaikinVerificationError, "unknown"),  # cool must confirm
-        ("0", "--", DaikinVerificationError, "unknown"),  # auto must confirm
-        ("4", "22.5", None, "confirmed"),
-        ("2", "24.0", DaikinVerificationError, "unknown"),  # a number is checked
+        ("4", "4", "22.5", None, "confirmed"),  # heat
+        ("3", "3", "22.5", None, "confirmed"),  # cool
+        ("6", "6", "22.5", None, "unknown"),  # fan: a number proves nothing
+        ("2", "2", "22.5", None, "unknown"),  # dry: neither
+        ("6", "6", "--", None, "unknown"),  # fan accepts and ignores stemp
+        ("2", "2", "M", None, "unknown"),
+        ("4", "4", "--", DaikinVerificationError, "unknown"),
+        ("3", "3", "M", DaikinVerificationError, "unknown"),
+        ("0", "0", "--", DaikinVerificationError, "unknown"),  # auto
+        ("6", "6", "24.0", DaikinVerificationError, "unknown"),  # a number is checked
+        ("2", "2", "24.0", DaikinVerificationError, "unknown"),
+        ("4", "3", "22.5", None, "unknown"),  # mode changed during verification
+        ("4", "6", "--", None, "unknown"),
+        ("6", "4", "22.5", None, "unknown"),
     ],
 )
 @pytest.mark.asyncio
-async def test_non_numeric_readback_only_without_setpoint_mode(
-    aresponses, client_session, mode, readback, error, status
+async def test_readback_confirms_only_in_setpoint_modes(
+    aresponses, client_session, mode, back_mode, back, error, status
 ):
-    """Only dry/fan may read back M/--; elsewhere it is an unconfirmed setpoint."""
-    after = CONTROL.replace("mode=4", f"mode={mode}").replace(
-        "stemp={stemp}", "stemp=" + readback
-    )
-    add_routes(aresponses, ["22.0"], ["ret=OK"])
-    aresponses.add(path_pattern=GET, response=after.replace("{stemp}", readback))
+    """Only heat/cool/auto with an unchanged mode can confirm the 0.5 °C step."""
+    aresponses.add(path_pattern=GET, response=ctrl(mode, "22.0"))
+    aresponses.add(path_pattern=SET, response="ret=OK")
+    aresponses.add(path_pattern=GET, response=ctrl(back_mode, back))
     device = DaikinBRP069("192.168.1.100", session=client_session)
 
     if error:
@@ -725,8 +737,25 @@ async def test_non_numeric_readback_only_without_setpoint_mode(
     else:
         await device.set({"stemp": "22.5"})
 
+    assert sent(aresponses)[0]["mode"] == mode
     assert device.target_temperature_step_status == status
-    assert device.values.get("stemp", invalidate=False) == readback
+    assert device.values.get("stemp", invalidate=False) == back
+    aresponses.assert_no_unused_routes()
+
+
+@pytest.mark.parametrize("mode", ["2", "6"], ids=["dry", "fan"])
+@pytest.mark.asyncio
+async def test_no_fallback_in_no_setpoint_modes(aresponses, client_session, mode):
+    """PARAM NG in dry/fan mode is no precision evidence, even with a numeric stemp."""
+    aresponses.add(path_pattern=GET, response=ctrl(mode, "22.0"))
+    aresponses.add(path_pattern=SET, response="ret=PARAM NG")
+    device = DaikinBRP069("192.168.1.100", session=client_session)
+
+    with pytest.raises(DaikinCommandRejected):
+        await device.set({"stemp": "23.5"})
+
+    assert len(sent(aresponses)) == 1
+    assert device.target_temperature_step_status == "unknown"
     aresponses.assert_no_unused_routes()
 
 

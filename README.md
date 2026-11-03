@@ -104,6 +104,10 @@ The behaviour of `device.set(...)` was validated against the unit's behaviour (s
 
 If you have a device with firmware 2.8.0 that is not working correctly, please open an issue with your device model and debug logs.
 
+## Multi-split mode conflict (BRP069)
+
+`device.mode_conflict` is `True` while the unit reports `err=10000`. Daikin documents this code as an operation mode conflict in multi-split systems: e.g. heat is requested while another indoor unit cools. A unit that is switched on then stays in standby. Its setpoint is still accepted and stored, and the compressor frequency belongs to the shared outdoor unit, so neither shows whether this unit is actually heating or cooling. Units that are switched off report the code too if their stored mode conflicts, so check the power state before treating a unit as blocked.
+
 ## Unsupported Devices
 
 The following device and firmware combinations are not currently supported:

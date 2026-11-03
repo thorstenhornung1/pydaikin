@@ -462,6 +462,19 @@ class DaikinBRP069(Appliance):
             await self.set_clock()
 
     @property
+    def mode_conflict(self) -> bool:
+        """Return True while the unit reports a multi-split mode conflict.
+
+        Indoor units that request a mode incompatible with the outdoor unit
+        (e.g. heat while another unit cools) report ``err=10000``, which Daikin
+        documents as an operation mode conflict; a unit that is on then stays
+        in standby. Units that are off report it too if their stored mode
+        conflicts, so check the power state as well. ``err`` is taken from
+        ``aircon/get_sensor_info``, so it follows every poll.
+        """
+        return self.values.get("err") == "10000"
+
+    @property
     def support_led(self) -> bool:
         """Return True if the Wi-Fi adapter exposes its status LED.
 
